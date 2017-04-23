@@ -7,16 +7,24 @@ var hyperdrive = require('hyperdrive')
 var mirror = require('mirror-folder')
 var minimist = require('minimist')
 var path = require('path')
+var hyperstaging = require('hyperdrive-staging-area')
+
+process.on('unhandledRejection', (reason, p) => {
+  console.log('Unhandled Rejection at: Promise', p, 'reason:', reason);
+  // application specific logging, throwing an error, or other logic here
+});
 
 var argv = minimist(process.argv.slice(2), {
-  default: {utp: true, watch: true, seed: false},
-  boolean: ['utp', 'watch']
+  default: {utp: true, watch: true, seed: false, all: false},
+  boolean: ['utp', 'watch', 'all']
 })
 
 var key = argv._[0]
 
-if (key) download(new Buffer(key, 'hex'))
-else upload()
+if (!key) diff()
+else if (key === 'commit') commit()
+else if (key === 'revert') revert()
+else download(new Buffer(key, 'hex'))
 
 function download (key) {
   var filter = argv._[1] || '/'
@@ -68,8 +76,26 @@ function download (key) {
   })
 }
 
-function upload () {
+function diff () {
   var archive = hyperdrive('.dat')
+  var staging = hyperstaging(archive, '.')
+
+  archive.on('ready', function () {
+    console.log('Diffing', process.cwd())
+    console.log('Key is: ' + archive.key.toString('hex'))
+
+    staging.diff({skipIgnore: argv.all}, function (err, changes) {
+      if (err) return console.error(err)
+      renderDiff(changes)
+    })
+  })
+}
+
+function commit () {
+  var archive = hyperdrive('.dat')
+  var staging = hyperstaging(archive, '.')
+
+  console.log(argv)
 
   archive.on('ready', function () {
     console.log('Sharing', process.cwd())
@@ -79,15 +105,46 @@ function upload () {
 
     if (!!argv.seed) return
 
-    var progress = mirror(process.cwd(), {name: '/', fs: archive}, {ignore: ignore, live: argv.watch, dereference: true})
-
-    progress.on('put', function (src) {
-      console.log('Adding file', src.name)
+    staging.commit({skipIgnore: argv.all}, function (err, changes) {
+      if (err) return console.error(err)
+      renderDiff(changes)
+      console.log('Sharing...')
     })
+  })
+}
 
-    progress.on('del', function (src) {
-      console.log('Removing file', src.name)
+function revert () {
+  var archive = hyperdrive('.dat')
+  var staging = hyperstaging(archive, '.')
+
+  archive.on('ready', function () {
+    console.log('Reverting', process.cwd())
+    console.log('Key is: ' + archive.key.toString('hex'))
+
+    staging.revert({skipIgnore: argv.all}, function (err, changes) {
+      if (err) return console.error(err)
+      renderDiff(changes, {opposite: true})
     })
+  })
+}
+
+function renderDiff (changes, opts) {
+  var opposite = opts && opts.opposite
+  if (changes.length === 0) {
+    return console.log('No changes')
+  }
+  changes.forEach(d => {
+    var op = d.change
+    if (opposite) {
+      if (op === 'add') op = '--'
+      if (op === 'mod') op = '~~'
+      if (op === 'del') op = '++'
+    } else {
+      if (op === 'add') op = '++'
+      if (op === 'mod') op = '~~'
+      if (op === 'del') op = '--'      
+    }
+    console.log(op.toUpperCase(), d.path)
   })
 }
 
